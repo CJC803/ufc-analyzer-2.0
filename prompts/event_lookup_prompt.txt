@@ -1,0 +1,10 @@
+Find the next UFC event. Return strict JSON:
+
+{
+  "event_name": "",
+  "event_date": "",
+  "location": "",
+  "fight_card": [
+    {"fighter_a": "", "fighter_b": ""}
+  ]
+}
