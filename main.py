@@ -3,6 +3,8 @@ import json
 import time
 
 from utils.openai_client import client
+from utils.gpt_safe import gpt_safe_call
+
 from utils.ufcstats_events import get_next_ufc_event
 from utils.batch_fighter_lookup import batch_fighter_lookup
 from utils.batch_odds_lookup import batch_odds_lookup
@@ -13,15 +15,16 @@ from utils.fighter_merger import merge_fighter_profile
 from utils.usage_limit import usage_ok
 from utils.helpers import safe_json_load
 
+
 # -----------------------------------------------------
 # PAGE CONFIG
 # -----------------------------------------------------
 st.set_page_config(
     page_title="UFC Fight Card Analyzer (Elite Mode)",
-    layout="wide",
+    layout="wide"
 )
 
-st.title("🥋 UFC Fight Card Analyzer — **Elite Mode**")
+st.title("🥋 UFC Fight Card Analyzer — Elite Mode (V4 — Stable)")
 
 
 # -----------------------------------------------------
@@ -36,80 +39,72 @@ analysis_prompt = load_prompt("prompts/analysis_prompt.txt")
 
 
 # -----------------------------------------------------
-# GPT HELPERS
-# -----------------------------------------------------
-def call_gpt(payload):
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "system", "content": system_prompt},
-                  {"role": "user", "content": payload}]
-    )
-    return res.choices[0].message.content
-
-
-# -----------------------------------------------------
 # TAPOLOGY BATCHER (8 fighters)
 # -----------------------------------------------------
 def run_tapology_batches(fighter_list):
     BATCH = 8
     tap = {}
+
     for i in range(0, len(fighter_list), BATCH):
         chunk = fighter_list[i:i+BATCH]
+
         with st.spinner(f"📄 Retrieving Tapology histories for: {', '.join(chunk)}"):
             result = batch_tapology_histories(chunk)
             tap.update(result.get("fighters", {}))
             time.sleep(0.4)
+
     return tap
 
 
 # -----------------------------------------------------
-# FIGHTER PROCESS PIPELINE
+# FIGHTER PIPELINE
 # -----------------------------------------------------
 def process_fighters(event_data):
     fighter_names = []
     for fight in event_data["fight_card"]:
-        fighter_names.append(fight["fighter_a"])
-        fighter_names.append(fight["fighter_b"])
+        fighter_names.extend([fight["fighter_a"], fight["fighter_b"]])
 
     fighter_names = list(dict.fromkeys(fighter_names))
 
-    # metadata
+    # 1) Metadata
     with st.spinner("🔎 Fetching fighter metadata..."):
         meta = batch_fighter_lookup(fighter_names)["fighters"]
 
-    # tapology
+    # 2) Tapology histories
     tap = run_tapology_batches(fighter_names)
 
-    # scrapers
+    # 3) Sherdog + UFC Stats per fighter
     sd = {}
     uf = {}
 
     for name in fighter_names:
-        meta_info = meta.get(name, {})
+        info = meta.get(name, {})
 
         # Sherdog
-        s_url = meta_info.get("sherdog_url", "")
-        if s_url:
-            with st.spinner(f"🐶 Sherdog for {name}"):
-                sd[name] = fetch_sherdog_profile(s_url)
+        url = info.get("sherdog_url", "")
+        if url:
+            with st.spinner(f"🐶 Sherdog: {name}"):
+                sd[name] = fetch_sherdog_profile(url)
         else:
             sd[name] = []
 
         # UFCStats
-        fid = meta_info.get("ufcstats_id", "")
+        fid = info.get("ufcstats_id", "")
         if fid:
-            with st.spinner(f"📊 UFCStats for {name}"):
+            with st.spinner(f"📊 UFCStats: {name}"):
                 uf[name] = fetch_ufcstats(fid)
         else:
             uf[name] = {}
 
-    # Odds for all fights
+    # 4) Odds for all fights
     labels = [f"{f['fighter_a']} vs {f['fighter_b']}" for f in event_data["fight_card"]]
-    with st.spinner("💰 Fetching betting odds..."):
+
+    with st.spinner("💰 Retrieving odds..."):
         odds = batch_odds_lookup(labels)["odds"]
 
-    # Merge data
+    # 5) Merge
     merged = {}
+
     for fight in event_data["fight_card"]:
         A = fight["fighter_a"]
         B = fight["fighter_b"]
@@ -117,8 +112,12 @@ def process_fighters(event_data):
         fight_odds = odds.get(label, {})
 
         merged[label] = {
-            A: merge_fighter_profile(A, meta.get(A, {}), tap.get(A, []), sd.get(A, []), uf.get(A, {}), fight_odds),
-            B: merge_fighter_profile(B, meta.get(B, {}), tap.get(B, []), sd.get(B, []), uf.get(B, {}), fight_odds),
+            A: merge_fighter_profile(A, info=meta.get(A, {}), tap=tap.get(A, []),
+                                     sherdog=sd.get(A, []), ufcstats=uf.get(A, {}),
+                                     odds=fight_odds),
+            B: merge_fighter_profile(B, info=meta.get(B, {}), tap=tap.get(B, []),
+                                     sherdog=sd.get(B, []), ufcstats=uf.get(B, {}),
+                                     odds=fight_odds),
             "odds": fight_odds
         }
 
@@ -126,7 +125,7 @@ def process_fighters(event_data):
 
 
 # -----------------------------------------------------
-# FINAL CARD ANALYSIS
+# FINAL ANALYSIS
 # -----------------------------------------------------
 def run_final_analysis(merged, event_data):
     payload = {
@@ -135,7 +134,7 @@ def run_final_analysis(merged, event_data):
     }
 
     prompt = f"""
-Use the following dataset to produce full fight analysis:
+Use the following dataset to produce full UFC fight analysis:
 
 {json.dumps(payload, indent=2)}
 
@@ -143,21 +142,24 @@ Instructions:
 {analysis_prompt}
 """
 
-    with st.spinner("🧠 Generating elite analysis..."):
-        return call_gpt(prompt)
+    with st.spinner("🧠 Generating Elite Mode Analysis..."):
+        raw = gpt_safe_call([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ])
+
+        return raw
 
 
 # -----------------------------------------------------
-# UI — SINGLE BUTTON
+# UI (One Button)
 # -----------------------------------------------------
-st.subheader("🔥 Analyze the next UFC event automatically")
-
-if st.button("Analyze Next UFC Event"):
+if st.button("🔥 Analyze Next UFC Event"):
     if not usage_ok():
         st.error("Daily usage limit reached.")
         st.stop()
 
-    # 1. Get next UFC event (UFCStats scrape)
+    # 1. Fetch event (scraper → fallback)
     with st.spinner("📅 Fetching next UFC event..."):
         event_data = get_next_ufc_event()
 
@@ -165,9 +167,9 @@ if st.button("Analyze Next UFC Event"):
         st.error(event_data["error"])
         st.stop()
 
-    st.markdown(f"### {event_data['event_name']}")
-    st.write(f"📍 {event_data['location']}")
+    st.subheader(event_data["event_name"])
     st.write(f"📅 {event_data['event_date']}")
+    st.write(f"📍 {event_data['location']}")
     st.divider()
 
     # 2. Process fighters
