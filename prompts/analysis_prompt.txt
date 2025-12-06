@@ -1,0 +1,25 @@
+Perform full fight card analysis using the merged fighter vectors.
+
+Include for each fight:
+- Style matchup
+- Technical breakdown
+- Recent form
+- Key stats (striking & grappling)
+- Reach, age, stance impact
+- Stylistic clusters
+- Gas tank considerations
+- Durability red flags
+- Weight cut concerns
+- Fight IQ evaluation
+- Finishing threat score
+- Betting odds interpretation
+- Prediction (winner + method)
+- Confidence score (0–100)
+
+After analyzing all fights:
+- Provide 3 parlays:
+  1. Safe
+  2. Value
+  3. Chaos long-shot
+
+Return clean Markdown.
