@@ -1,21 +1,22 @@
 import requests
 from bs4 import BeautifulSoup
-from utils.openai_client import client
+import json
 import time
+
+from utils.openai_client import client
+from utils.gpt_safe import gpt_safe_call
+
 
 UFC_UPCOMING = "http://ufcstats.com/statistics/events/upcoming"
 
 
 def scrape_next_event():
-    """
-    Attempts to scrape UFCStats upcoming events.
-    Returns event dict OR None if it fails.
-    """
+    """Attempts to scrape UFCStats for upcoming events. Returns event dict OR None."""
 
     try:
         html = requests.get(UFC_UPCOMING, timeout=12).text
     except:
-        return None  # let caller fall back to GPT
+        return None
 
     soup = BeautifulSoup(html, "html.parser")
     rows = soup.select("tbody tr")
@@ -37,7 +38,7 @@ def scrape_next_event():
         event_url = link.get("href")
         event_name = link.get_text(strip=True)
         event_date = cols[1].get_text(strip=True)
-        location = cols[2].get_text(strip=True)
+        location   = cols[2].get_text(strip=True)
 
         next_event = {
             "event_name": event_name,
@@ -50,16 +51,16 @@ def scrape_next_event():
     if not next_event:
         return None
 
-    # Now scrape the event page for fight card
+    # Scrape event card
     try:
-        event_html = requests.get(next_event["event_url"], timeout=12).text
+        ehtml = requests.get(next_event["event_url"], timeout=12).text
     except:
         return None
 
-    es = BeautifulSoup(event_html, "html.parser")
+    es = BeautifulSoup(ehtml, "html.parser")
+    fight_rows = es.select(".b-fight-details__table-body tr")
 
     fights = []
-    fight_rows = es.select(".b-fight-details__table-body tr")
 
     for fr in fight_rows:
         cells = fr.find_all("td")
@@ -78,15 +79,12 @@ def scrape_next_event():
 
 def gpt_fallback_next_event():
     """
-    If UFCStats scraping fails, use GPT (search-only, no browsing)
-    to retrieve next UFC event safely.
+    Uses GPT (search-only, no browsing) to retrieve the next UFC event.
+    Now wrapped with gpt_safe_call to avoid rate limits.
     """
 
     prompt = """
-Find the NEXT upcoming UFC event.
-Do NOT browse websites.
-Use your internal knowledge + search.
-
+Find the NEXT upcoming UFC event using search (NOT browsing).
 Return STRICT JSON:
 
 {
@@ -99,33 +97,25 @@ Return STRICT JSON:
 }
 """
 
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
+    raw = gpt_safe_call([
+        {"role": "user", "content": prompt}
+    ])
 
-    try:
-        return json.loads(res.choices[0].message.content)
-    except:
-        return {"error": "GPT fallback failed."}
+    return json.loads(raw)
 
 
 def get_next_ufc_event():
     """
     Master function:
-    1. Try scraping UFCStats up to 3 times.
-    2. If all retry attempts fail → fallback to GPT.
+    1. Try scraping UFCStats up to 3 times (with backoff).
+    2. If scraping fails, fall back to GPT-safe event fetch.
     """
 
-    # Try scraping 3 times
     for attempt in range(3):
-        ev = scrape_next_event()
-        if ev:
-            return ev
-
-        # backoff
+        result = scrape_next_event()
+        if result:
+            return result
         time.sleep(1 + attempt)
 
-    # Scraping failed — now use GPT fallback
+    # fallback
     return gpt_fallback_next_event()
